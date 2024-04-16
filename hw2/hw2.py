@@ -1,14 +1,17 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from copy import deepcopy
 from scipy import fft, signal
 from scipy.linalg import circulant
 from scipy.sparse.linalg import LaplacianNd
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from sklearn.neighbors import BallTree
-from copy import deepcopy
 
 SRC_IMG_PATH = 'DIPSourceHW2.png'
+LOW_RES_DIR = 'low_resolution'
+HIGH_RES_DIR = 'high_resolution'
 PATCH_SIZE = 15
 ALPHA = 3
 GAUSS_STD = 5.0
@@ -68,10 +71,10 @@ def reconstruct_image(low_res_img, kernel, k=0.1, alpha=ALPHA):
     return np.abs(fft.ifft2(fft.fft2(upsampled_img) * kernel))
 
 
-def plot_and_save_fig(img, *, title, filename):
+def plot_and_save_fig(img, *, title, path):
     plt.imshow(img, cmap='gray')
     plt.title(title)
-    plt.savefig(filename)
+    plt.savefig(path)
     plt.show()
 
 
@@ -87,14 +90,15 @@ def reconstruct_plot_and_save(low_res_img, kernel, orig_image, orig_image_size, 
                     reconst[:height, :width], data_range=1.0)
     title = f'Blurred with {blurred_with}, reconstructed with {reconst_with} - PSNR: {psnr_val:.2f}'
     filename = f'{blurred_with}-{"_".join(reconst_with.split())}.png'
-    plot_and_save_fig(reconst, title=title, filename=filename)
+    path = f'{HIGH_RES_DIR}/{filename}'
+    plot_and_save_fig(reconst, title=title, path=path)
 
 
 def estimate_kernel(low_res_img,
                     patch_size=PATCH_SIZE,
                     alpha=ALPHA,
                     num_iter=15,
-                    # best sigma value found after experiments (for the specific image provided).
+                    # 
                     sigma=1):
     """
     Implementation of the algoithm from the paper:
@@ -104,8 +108,9 @@ def estimate_kernel(low_res_img,
     :param patch_size: Size of each patch from the high resolution image.
     :param alpha: Scale factor between the low resolution and high resolution images.
     :param num_iter: Number of iteration to run the algorithm for. The paper mentioned that the algorithm converged
-        after ~iterations.
-    :param sigma: The sigma value to use in the algorithm.
+        after ~15 iterations.
+    :param sigma: The sigma value to use in the algorithm. Default value is 1,which is the best sigma value found after 
+        experiments (for the specific image provided).
     :return: The estimated kernel of shape (patch_size, patch_size).
     """
     # Size of q patches is the size of the high resolution patch divided by alpha.
@@ -115,8 +120,7 @@ def estimate_kernel(low_res_img,
     q_patches = get_patches(low_res_img, q_patch_size, alpha)
 
     # Create Rj matrices. Each matrix corresponding to convolution with patch r[j] and sub-sampling by alpha.
-    Rj = np.array([downsample_rows(circulant(r_patch), alpha ** 2)
-                  for r_patch in r_patches])
+    Rj = np.array([downsample_rows(circulant(r_patch), alpha ** 2) for r_patch in r_patches])
 
     # initialize k_hat with delta function.
     k_hat = signal.unit_impulse(patch_size ** 2, idx='mid')
@@ -132,14 +136,12 @@ def estimate_kernel(low_res_img,
         # Calculate neighbors weights
         with np.errstate(divide='ignore', invalid='ignore'):
             tree = BallTree(r_alpha_patches, leaf_size=2)
-            weights = np.zeros(
-                (len(q_patches), len(r_alpha_patches)), dtype=float)
+            weights = np.zeros((len(q_patches), len(r_alpha_patches)), dtype=float)
             for i, q_patch in enumerate(q_patches):
                 _, neig_idxs = tree.query(q_patch[np.newaxis], k=10)
                 for j in neig_idxs.squeeze():
                     weights[i, j] = \
-                        np.exp(-(np.linalg.norm(q_patch -
-                               r_alpha_patches[j]) ** 2) / (2 * sigma ** 2))
+                        np.exp(-(np.linalg.norm(q_patch - r_alpha_patches[j]) ** 2) / (2 * sigma ** 2))
             # normalize weights. If there are rows with sum 0, the values in these rows will become NaN.
             weights /= np.sum(weights, axis=1).reshape(-1, 1)
 
@@ -166,7 +168,9 @@ def estimate_kernel(low_res_img,
 
 
 def main():
-    orig_image = cv2.imread( SRC_IMG_PATH, cv2.IMREAD_GRAYSCALE).astype(float) / 255.0
+    os.makedirs(LOW_RES_DIR, exist_ok=True)
+    os.makedirs(HIGH_RES_DIR, exist_ok=True)
+    orig_image = cv2.imread(SRC_IMG_PATH, cv2.IMREAD_GRAYSCALE).astype(float) / 255.0
     height, width = orig_image.shape
     width_pad = 0 if width % ALPHA == 0 else ALPHA - width % ALPHA
     height_pad = 0 if height % ALPHA == 0 else ALPHA - height % ALPHA
@@ -184,9 +188,9 @@ def main():
 
     # Plot and save low resolution images
     plot_and_save_fig(sinc_low_res, title='Sinc filter - low resolution',
-                      filename='sinc_low_res.png')
+                      path=os.path.join(LOW_RES_DIR, 'sinc_low_res.png'))
     plot_and_save_fig(gaussian_low_res, title='Gaussian filter - low resolution',
-                      filename='gaussian_low_res.png')
+                      path=os.path.join(LOW_RES_DIR, 'gaussian_low_res.png'))
 
     # Calculate estimated kernels using the algorithm.
     sinc_estimated_kernel = estimate_kernel(sinc_low_res)
